@@ -55,6 +55,79 @@ html, body, [data-testid="stAppViewContainer"] {background:#07101e; color:var(--
  .hero{padding:1rem}.hero h1{font-size:1.65rem}
  .market-card{min-height:96px;padding:.8rem}.market-value{font-size:1.18rem}
 }
+
+.news-card {
+    border: 1px solid rgba(148,163,184,.20);
+    background: linear-gradient(145deg, rgba(15,23,42,.96), rgba(20,30,50,.90));
+    border-radius: 16px;
+    padding: 15px;
+    margin-bottom: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.16);
+}
+.news-topline {
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+    align-items:center;
+    margin-bottom:8px;
+}
+.news-badge {
+    display:inline-block;
+    border-radius:999px;
+    padding:4px 9px;
+    margin-right:5px;
+    background:rgba(59,130,246,.16);
+    border:1px solid rgba(96,165,250,.24);
+    font-size:.72rem;
+    font-weight:700;
+}
+.impact-high {color:#4ade80;font-weight:800;}
+.impact-medium {color:#facc15;font-weight:800;}
+.impact-low {color:#cbd5e1;font-weight:800;}
+.news-headline {font-size:1rem;font-weight:750;line-height:1.35;margin:.35rem 0;}
+.news-meta {font-size:.79rem;opacity:.70;}
+
+
+.briefing {
+    border:1px solid rgba(96,165,250,.30);
+    background:linear-gradient(145deg, rgba(7,21,41,.98), rgba(13,46,104,.75));
+    border-radius:20px;
+    padding:18px;
+    margin:12px 0 18px;
+    box-shadow:0 14px 34px rgba(0,0,0,.22);
+}
+.briefing-title {font-size:1.3rem;font-weight:900;margin-bottom:3px;}
+.briefing-sub {color:#9badca;font-size:.86rem;margin-bottom:14px;}
+.brief-row {
+    display:grid;
+    grid-template-columns:36px 72px 1fr 90px;
+    gap:8px;
+    align-items:center;
+    padding:10px 0;
+    border-bottom:1px solid rgba(255,255,255,.08);
+}
+.brief-row:last-child {border-bottom:0;}
+.brief-rank {font-weight:900;color:#8fb8ff;}
+.brief-ticker {font-weight:900;font-size:1.06rem;}
+.brief-catalyst {font-size:.84rem;color:#c5d1e8;}
+.brief-score {font-weight:900;text-align:right;}
+.risk-flag {
+    display:inline-block;
+    border-radius:999px;
+    padding:3px 8px;
+    margin-top:4px;
+    font-size:.70rem;
+    font-weight:800;
+    background:rgba(250,204,21,.12);
+    border:1px solid rgba(250,204,21,.22);
+    color:#fde68a;
+}
+@media(max-width:700px){
+ .brief-row{grid-template-columns:28px 58px 1fr 66px;gap:5px}
+ .brief-catalyst{font-size:.76rem}
+ .brief-score{font-size:.82rem}
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -167,7 +240,119 @@ for col, item in zip(market_cols, overview):
             unsafe_allow_html=True,
         )
 
+
 mood_label, mood_icon, mood_confidence = market_mood(df, overview)
+
+# ---------------------------------------------------------------------------
+# STEP 6 — DAILY AI MARKET BRIEFING
+# ---------------------------------------------------------------------------
+briefing_records = sorted(
+    records,
+    key=lambda r: (
+        float(r.get("ai_score", 0)),
+        float(r.get("probability_up", 0)),
+    ),
+    reverse=True,
+)[:5]
+
+briefing_lines = [
+    f"{greeting}, Chris.",
+    "",
+    f"Market mood: {mood_label} ({mood_confidence}% confidence)",
+    "",
+    "Today's five highest-ranked watchlist opportunities:",
+]
+
+briefing_rows_html = []
+for rank, record in enumerate(briefing_records, start=1):
+    ticker = record.get("ticker", "")
+    score = float(record.get("ai_score", 0))
+    probability = float(record.get("probability_up", 0))
+    coverage = float(record.get("evidence_coverage", 0))
+    volume = float(record.get("volume_ratio_30m", 0))
+    move_30m = float(record.get("return_30m", 0))
+
+    articles = sorted(
+        record.get("news", []),
+        key=lambda item: float(item.get("impact_score", 0)),
+        reverse=True,
+    )
+    if articles:
+        top_article = articles[0]
+        catalyst = (
+            f'{top_article.get("event_type", "News")} · '
+            f'{top_article.get("sentiment_label", "Neutral")} · '
+            f'{float(top_article.get("impact_score", 0)):.0f}/100 impact'
+        )
+    else:
+        catalyst = "No qualifying live catalyst returned"
+
+    flags = []
+    if coverage < 55:
+        flags.append("limited evidence")
+    if volume > 2.5:
+        flags.append("high-volume move")
+    if abs(move_30m) > 0.05:
+        flags.append("possible price exhaustion")
+    if probability < threshold:
+        flags.append("below alert threshold")
+    risk_text = " · ".join(flags) if flags else "no major model flag"
+
+    briefing_rows_html.append(
+        f"""
+        <div class="brief-row">
+            <div class="brief-rank">#{rank}</div>
+            <div class="brief-ticker">{ticker}</div>
+            <div class="brief-catalyst">
+                {catalyst}<br>
+                <span class="risk-flag">{risk_text}</span>
+            </div>
+            <div class="brief-score">{score:.0f}/100<br><span class="small">{probability:.0%}</span></div>
+        </div>
+        """
+    )
+    briefing_lines.append(
+        f"{rank}. {ticker} — AI Score {score:.0f}/100; "
+        f"probability up {probability:.0%}; {catalyst}; risk: {risk_text}."
+    )
+
+positive_breadth = int((df["return_1d"] > 0).sum()) if "return_1d" in df else 0
+briefing_lines.extend(
+    [
+        "",
+        f"Watchlist breadth: {positive_breadth} of {len(df)} stocks are rising today.",
+        "",
+        "This is research and decision support, not a trade instruction.",
+    ]
+)
+briefing_text = "\n".join(briefing_lines)
+
+st.markdown(
+    f"""
+    <div class="briefing">
+        <div class="briefing-title">☀️ Daily AI Market Briefing</div>
+        <div class="briefing-sub">
+            Generated from the latest saved scan · {datetime.now().strftime("%d %b %Y, %H:%M")}
+        </div>
+        <p><b>{mood_icon} Market mood:</b> {mood_label} · {mood_confidence}% confidence</p>
+        {''.join(briefing_rows_html)}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+brief_a, brief_b = st.columns([1, 1])
+with brief_a:
+    st.download_button(
+        "Download today's briefing",
+        data=briefing_text,
+        file_name=f"vektra_alpha_briefing_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+with brief_b:
+    with st.expander("Read briefing as plain text"):
+        st.text(briefing_text)
 summary_left, summary_right = st.columns([2.2, 1])
 with summary_left:
     st.markdown('<div class="section-title">🔥 Top Opportunities</div>', unsafe_allow_html=True)
@@ -241,20 +426,101 @@ if selected_record:
 
 news_col, portfolio_col = st.columns([1.35, 1])
 with news_col:
-    st.markdown('<div class="section-title">📰 Latest Market News</div>', unsafe_allow_html=True)
-    news_count = 0
-    for record in top_records:
-        for item in record.get("news", [])[:2]:
-            if news_count >= 10:
-                break
-            headline = item.get("headline", "Untitled")
-            source = item.get("source", "Unknown source")
-            url = item.get("url", "")
-            title = f'<a href="{url}" target="_blank">{headline}</a>' if url else headline
-            st.markdown(f'<div class="news-item"><b>{record.get("ticker")}</b> · {title}<br><span class="small">{source}</span></div>', unsafe_allow_html=True)
-            news_count += 1
-    if news_count == 0:
-        st.caption("No current articles were returned by the configured news feed.")
+    st.markdown('<div class="section-title">📰 Intelligent News Cards</div>', unsafe_allow_html=True)
+
+    filter_a, filter_b = st.columns(2)
+    with filter_a:
+        news_direction = st.selectbox(
+            "Direction",
+            ["All", "Bullish", "Neutral", "Bearish"],
+            label_visibility="collapsed",
+        )
+    with filter_b:
+        minimum_impact = st.selectbox(
+            "Minimum impact",
+            ["All impact", "Moderate+", "High+"],
+            label_visibility="collapsed",
+        )
+
+    all_news = []
+    for record in records:
+        for item in record.get("news", []):
+            enriched = dict(item)
+            enriched.setdefault("ticker", record.get("ticker", ""))
+            all_news.append(enriched)
+
+    all_news.sort(
+        key=lambda item: (
+            float(item.get("impact_score", 0)),
+            float(item.get("datetime", 0) or 0),
+        ),
+        reverse=True,
+    )
+
+    shown = 0
+    for item in all_news:
+        direction = item.get("sentiment_label", "Neutral")
+        impact = float(item.get("impact_score", 0))
+
+        if news_direction != "All" and direction != news_direction:
+            continue
+        if minimum_impact == "Moderate+" and impact < 50:
+            continue
+        if minimum_impact == "High+" and impact < 65:
+            continue
+        if shown >= 12:
+            break
+
+        headline = item.get("headline", "Untitled")
+        source = item.get("source", "Unknown source")
+        url = item.get("url", "")
+        ticker = item.get("ticker", "")
+        event_type = item.get("event_type", "Other")
+        age_text = item.get("age_text", "Unknown age")
+        quality = item.get("source_quality", "Unknown")
+        impact_label = item.get("impact_label", "Low")
+        reason = item.get("reason", "No explanation available")
+        sentiment_icon = item.get("sentiment_icon", "🟠")
+
+        if impact >= 65:
+            impact_class = "impact-high"
+        elif impact >= 50:
+            impact_class = "impact-medium"
+        else:
+            impact_class = "impact-low"
+
+        headline_html = (
+            f'<a href="{url}" target="_blank">{headline}</a>'
+            if url else headline
+        )
+
+        card_html = f"""
+        <div class="news-card">
+            <div class="news-topline">
+                <div>
+                    <span class="news-badge">{ticker}</span>
+                    <span class="news-badge">{event_type}</span>
+                </div>
+                <div class="{impact_class}">
+                    {impact_label} impact · {impact:.0f}/100
+                </div>
+            </div>
+            <div class="news-headline">
+                {sentiment_icon} {headline_html}
+            </div>
+            <div class="news-meta">
+                {source} · {quality} source quality · {age_text}
+            </div>
+            <div class="small" style="margin-top:8px">
+                <b>Why it matters:</b> {reason}
+            </div>
+        </div>
+        """
+        st.markdown(card_html, unsafe_allow_html=True)
+        shown += 1
+
+    if shown == 0:
+        st.caption("No articles match the selected filters or the news feed returned no current articles.")
 
 with portfolio_col:
     st.markdown('<div class="section-title">📊 My Portfolio</div>', unsafe_allow_html=True)
