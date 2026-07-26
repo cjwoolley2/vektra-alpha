@@ -8,12 +8,16 @@ import pandas as pd
 import streamlit as st
 
 from core import (
+    BROAD_US_UNIVERSE,
     DEFAULT_TICKERS,
     HISTORY_PATH,
     fetch_market_overview,
     fetch_price_history,
+    load_market_scan,
     load_results,
+    run_broad_market_scan,
     run_scan,
+    save_market_scan,
     save_results,
 )
 
@@ -210,6 +214,84 @@ with scan_col:
         st.success(f"Scan complete: {len(records)} stocks ranked.")
 with note_col:
     st.caption("The dashboard uses the latest saved scan. Background scans can continue through GitHub Actions.")
+
+
+st.markdown('<div class="section-title">🌐 Broad US Market Scanner</div>', unsafe_allow_html=True)
+market_scan_a, market_scan_b, market_scan_c = st.columns([1.2, 1, 2])
+
+with market_scan_a:
+    candidate_count = st.selectbox(
+        "Deep-analysis candidates",
+        [10, 15, 20],
+        index=1,
+        help="Only the strongest pre-screened candidates receive the full news and AI analysis.",
+    )
+
+with market_scan_b:
+    run_market_scan = st.button(
+        "Scan broad market",
+        type="secondary",
+        use_container_width=True,
+    )
+
+with market_scan_c:
+    st.caption(
+        f"Pre-screens {len(BROAD_US_UNIVERSE)} liquid US stocks, then deeply analyses the strongest candidates."
+    )
+
+if run_market_scan:
+    with st.spinner("Pre-screening the broad market, then running deep AI analysis..."):
+        market_records, market_candidates = run_broad_market_scan(
+            secret("FINNHUB_API_KEY"),
+            candidate_count=int(candidate_count),
+        )
+        save_market_scan(market_records, market_candidates)
+    st.success(
+        f"Broad scan complete: {len(market_candidates)} candidates pre-screened and "
+        f"{len(market_records)} deeply ranked."
+    )
+
+saved_market_scan = load_market_scan()
+if saved_market_scan:
+    market_records = saved_market_scan.get("records", [])
+    market_candidates = saved_market_scan.get("candidates", [])
+    generated_at = saved_market_scan.get("generated_at", "")
+
+    st.markdown("#### Emerging opportunities")
+    if market_records:
+        emerging_cols = st.columns(min(5, len(market_records[:5])))
+        for col, item in zip(emerging_cols, market_records[:5]):
+            with col:
+                pre = item.get("market_prefilter", {})
+                st.metric(
+                    item.get("ticker", ""),
+                    f'{float(item.get("ai_score", 0)):.0f}/100',
+                    f'{float(item.get("return_30m", 0)):+.2%} in 30m',
+                )
+                st.caption(
+                    f'Probability {float(item.get("probability_up", 0)):.0%} · '
+                    f'Volume {float(pre.get("relative_volume", 0)):.2f}×'
+                )
+    else:
+        st.caption("No deeply scored market candidates are saved yet.")
+
+    with st.expander("View fast pre-screen results"):
+        if market_candidates:
+            market_candidate_df = pd.DataFrame(market_candidates)
+            st.dataframe(
+                market_candidate_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "prefilter_score": st.column_config.ProgressColumn(
+                        "Pre-screen score", min_value=0, max_value=100, format="%.0f"
+                    ),
+                    "return_30m": st.column_config.NumberColumn("30m move", format="%+.2f%%"),
+                    "return_1d": st.column_config.NumberColumn("1-day move", format="%+.2f%%"),
+                    "relative_volume": st.column_config.NumberColumn("Relative volume", format="%.2fx"),
+                },
+            )
+        st.caption(f"Last broad scan: {generated_at or 'unknown'}")
 
 records = load_results()
 if not records:

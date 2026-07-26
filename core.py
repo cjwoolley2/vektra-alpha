@@ -24,11 +24,32 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 SIGNALS_PATH = DATA_DIR / "latest_signals.json"
 HISTORY_PATH = DATA_DIR / "signal_history.csv"
 ALERT_STATE_PATH = DATA_DIR / "alert_state.json"
+MARKET_SCAN_PATH = DATA_DIR / "market_scan.json"
 
 DEFAULT_TICKERS = [
     "NVDA", "TSLA", "AMD", "AAPL", "MSFT", "META", "AMZN", "GOOGL",
     "PLTR", "INTC", "ORCL", "MU", "AVGO", "CRWD", "COIN", "RIVN",
     "SOFI", "RKLB", "SMCI", "HOOD",
+]
+
+
+
+# Broad liquid US universe for the first production scanner release.
+BROAD_US_UNIVERSE = [
+    "AAPL","ABBV","ABNB","ADBE","ADI","ADP","ADSK","AEP","AMAT","AMD",
+    "AMGN","AMT","AMZN","ANET","APP","ARM","ASML","AVGO","AXP","BA",
+    "BAC","BKNG","BLK","BMY","BRK-B","C","CAT","CEG","CHTR","CMCSA",
+    "COF","COIN","COP","COST","CRM","CRWD","CSCO","CVS","CVX","DASH",
+    "DE","DELL","DIS","DKNG","DOCU","DUK","EA","EBAY","ELF","ENPH",
+    "ETN","F","FCX","FDX","GE","GILD","GM","GOOG","GOOGL","GS",
+    "HD","HON","HOOD","IBM","INTC","ISRG","JNJ","JPM","KO","LLY",
+    "LOW","LRCX","LULU","MA","MARA","MCD","MCO","MDB","MDLZ","META",
+    "MGM","MMM","MRK","MRNA","MRVL","MS","MSFT","MSTR","MU","NFLX",
+    "NKE","NOW","NVDA","NVO","NXPI","ORCL","PANW","PEP","PFE","PG",
+    "PLTR","PYPL","QCOM","RDDT","RBLX","RIVN","RKLB","ROKU","RTX",
+    "SBUX","SHOP","SMCI","SNOW","SOFI","SPOT","SQ","T","TEAM","TEM",
+    "TGT","TJX","TMO","TSLA","TSM","TTD","UBER","UNH","UPS","V",
+    "VRT","VRTX","WFC","WMT","XOM","ZM","ZS"
 ]
 
 
@@ -254,6 +275,124 @@ def fetch_market_snapshot(ticker: str) -> tuple[MarketSnapshot | None, dict[str,
         return None, metrics
 
 
+
+NEWS_SOURCE_TIERS = {
+    "reuters": ("High", 95),
+    "bloomberg": ("High", 94),
+    "associated press": ("High", 92),
+    "wall street journal": ("High", 92),
+    "financial times": ("High", 92),
+    "cnbc": ("High", 86),
+    "marketwatch": ("Medium", 76),
+    "seekingalpha": ("Medium", 67),
+    "benzinga": ("Medium", 66),
+    "yahoo": ("Medium", 64),
+}
+
+
+def source_quality(source: str) -> tuple[str, int]:
+    text = str(source or "").lower()
+    for key, value in NEWS_SOURCE_TIERS.items():
+        if key in text:
+            return value
+    if text in {"system", "unknown", ""}:
+        return "Unknown", 40
+    return "Medium", 62
+
+
+def news_age_label(timestamp: int | float | None) -> tuple[str, float]:
+    try:
+        published = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+        hours = max(0.0, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
+    except Exception:
+        return "Unknown age", 0.45
+
+    if hours < 1:
+        return f"{max(1, int(hours * 60))} min ago", 1.00
+    if hours < 24:
+        return f"{int(hours)} hr ago", max(0.55, 1.0 - hours / 48.0)
+    days = int(hours / 24)
+    return f"{days} day{'s' if days != 1 else ''} ago", max(0.15, 0.55 - days * 0.10)
+
+
+def intelligent_news_card(ticker: str, item: dict) -> dict:
+    """Create transparent metadata for each financial-news card."""
+    headline = str(item.get("headline", "") or "")
+    summary = str(item.get("summary", "") or "")
+    source = str(item.get("source", "Unknown source") or "Unknown source")
+    text = f"{headline}. {summary}".strip()
+
+    model = RuleBasedFinanceTextModel()
+    analysis = model.analyse(text, ticker)
+
+    direction = float(analysis.get("event_direction", 0.0))
+    materiality = float(analysis.get("materiality", 0.25))
+    surprise = float(analysis.get("expectation_surprise", 0.0))
+    manipulation = float(analysis.get("manipulation_risk", 0.0))
+    event_type = str(analysis.get("event_type", "other")).replace("_", " ").title()
+
+    quality_label, quality_score = source_quality(source)
+    age_text, freshness = news_age_label(item.get("datetime"))
+
+    direction_score = 50.0 + 50.0 * direction
+    impact_score = clamp(
+        0.34 * direction_score
+        + 0.27 * (100.0 * materiality)
+        + 0.18 * (100.0 * surprise)
+        + 0.13 * quality_score
+        + 0.08 * (100.0 * freshness)
+        - 35.0 * manipulation
+    )
+
+    if direction >= 0.28:
+        sentiment_label, sentiment_icon = "Bullish", "🟢"
+    elif direction <= -0.28:
+        sentiment_label, sentiment_icon = "Bearish", "🔴"
+    else:
+        sentiment_label, sentiment_icon = "Neutral", "🟠"
+
+    if impact_score >= 80:
+        impact_label = "Very high"
+    elif impact_score >= 65:
+        impact_label = "High"
+    elif impact_score >= 50:
+        impact_label = "Moderate"
+    else:
+        impact_label = "Low"
+
+    reasons = list(analysis.get("explanation", []))
+    reason = reasons[0] if reasons else f"{event_type} event detected"
+
+    return {
+        **item,
+        "ticker": ticker,
+        "event_type": event_type,
+        "sentiment_label": sentiment_label,
+        "sentiment_icon": sentiment_icon,
+        "impact_score": round(impact_score, 1),
+        "impact_label": impact_label,
+        "materiality_score": round(100.0 * materiality, 1),
+        "source_quality": quality_label,
+        "source_quality_score": quality_score,
+        "freshness": round(100.0 * freshness, 1),
+        "age_text": age_text,
+        "reason": reason,
+        "manipulation_risk": round(100.0 * manipulation, 1),
+    }
+
+
+def build_news_cards(ticker: str, articles: list[dict]) -> list[dict]:
+    cards = [intelligent_news_card(ticker, item) for item in articles]
+    cards.sort(
+        key=lambda item: (
+            float(item.get("impact_score", 0)),
+            float(item.get("datetime", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return cards
+
+
 def run_scan(tickers: list[str], finnhub_api_key: str) -> list[dict]:
     engine = GlobalNewsAlphaEngine(RuleBasedFinanceTextModel())
     snapshots: list[MarketSnapshot] = []
@@ -266,7 +405,7 @@ def run_scan(tickers: list[str], finnhub_api_key: str) -> list[dict]:
             articles = fetch_finnhub_news(ticker, finnhub_api_key)
         except Exception as exc:
             articles = [{"headline": f"News feed error: {exc}", "source": "system", "url": ""}]
-        news_by_ticker[ticker] = articles[:5]
+        news_by_ticker[ticker] = build_news_cards(ticker, articles[:10])
 
         for item in articles:
             published = datetime.fromtimestamp(item.get("datetime", 0), tz=timezone.utc)
@@ -359,6 +498,158 @@ def run_scan(tickers: list[str], finnhub_api_key: str) -> list[dict]:
 
     records.sort(key=lambda item: (float(item.get("ai_score", 0)), float(item.get("probability_up", 0))), reverse=True)
     return records
+
+
+
+def _normalise_batch_download(data: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFrame]:
+    result: dict[str, pd.DataFrame] = {}
+    if data is None or data.empty:
+        return result
+
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = set(str(x) for x in data.columns.get_level_values(0))
+        if {"Close", "Volume"}.intersection(level0):
+            for ticker in tickers:
+                try:
+                    frame = data.xs(ticker, axis=1, level=1, drop_level=True).copy()
+                    if not frame.empty:
+                        result[ticker] = frame
+                except Exception:
+                    continue
+        else:
+            for ticker in tickers:
+                try:
+                    frame = data.xs(ticker, axis=1, level=0, drop_level=True).copy()
+                    if not frame.empty:
+                        result[ticker] = frame
+                except Exception:
+                    continue
+    elif len(tickers) == 1:
+        result[tickers[0]] = data.copy()
+
+    return result
+
+
+def prefilter_market_universe(
+    tickers: list[str] | None = None,
+    candidate_count: int = 15,
+) -> list[dict[str, Any]]:
+    """Fast broad-market pre-screen using movement, volume and trend."""
+    tickers = list(dict.fromkeys(tickers or BROAD_US_UNIVERSE))
+    rows: list[dict[str, Any]] = []
+
+    for start in range(0, len(tickers), 40):
+        batch = tickers[start:start + 40]
+        try:
+            data = yf.download(
+                batch,
+                period="5d",
+                interval="30m",
+                group_by="column",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception:
+            continue
+
+        for ticker, frame in _normalise_batch_download(data, batch).items():
+            try:
+                close = frame["Close"].dropna()
+                volume = frame["Volume"].dropna()
+                if len(close) < 8 or len(volume) < 8:
+                    continue
+
+                last_price = safe_float(close.iloc[-1])
+                if last_price < 3.0:
+                    continue
+
+                return_30m = safe_float(close.pct_change().iloc[-1])
+                return_1d = safe_float(close.pct_change(13).iloc[-1]) if len(close) > 13 else 0.0
+                baseline_volume = safe_float(volume.tail(20).iloc[:-1].median(), 0.0)
+                relative_volume = (
+                    safe_float(volume.iloc[-1]) / baseline_volume
+                    if baseline_volume > 0 else 1.0
+                )
+
+                trend = 0.0
+                if len(close) >= 20:
+                    fast = safe_float(close.tail(6).mean())
+                    slow = safe_float(close.tail(20).mean())
+                    trend = (fast / slow - 1.0) if slow else 0.0
+
+                movement_score = min(abs(return_30m) / 0.035, 1.0)
+                daily_score = min(abs(return_1d) / 0.08, 1.0)
+                volume_score = min(max(relative_volume - 1.0, 0.0) / 3.0, 1.0)
+                trend_score = min(abs(trend) / 0.04, 1.0)
+
+                prefilter_score = 100.0 * (
+                    0.35 * movement_score
+                    + 0.30 * volume_score
+                    + 0.20 * daily_score
+                    + 0.15 * trend_score
+                )
+
+                rows.append({
+                    "ticker": ticker,
+                    "prefilter_score": round(prefilter_score, 1),
+                    "last_price": round(last_price, 4),
+                    "return_30m": round(return_30m, 6),
+                    "return_1d": round(return_1d, 6),
+                    "relative_volume": round(relative_volume, 2),
+                    "trend": round(trend, 6),
+                })
+            except Exception:
+                continue
+
+    rows.sort(key=lambda item: float(item.get("prefilter_score", 0)), reverse=True)
+    return rows[:max(1, int(candidate_count))]
+
+
+def run_broad_market_scan(
+    finnhub_api_key: str,
+    universe: list[str] | None = None,
+    candidate_count: int = 15,
+) -> tuple[list[dict], list[dict]]:
+    candidates = prefilter_market_universe(universe, candidate_count)
+    candidate_tickers = [item["ticker"] for item in candidates]
+    detailed = run_scan(candidate_tickers, finnhub_api_key) if candidate_tickers else []
+
+    prefilter_lookup = {item["ticker"]: item for item in candidates}
+    for record in detailed:
+        record["market_prefilter"] = prefilter_lookup.get(record.get("ticker"), {})
+        record["discovery_source"] = "Broad US market scanner"
+
+    detailed.sort(
+        key=lambda item: (
+            float(item.get("ai_score", 0)),
+            float(item.get("probability_up", 0)),
+            float(item.get("market_prefilter", {}).get("prefilter_score", 0)),
+        ),
+        reverse=True,
+    )
+    return detailed, candidates
+
+
+def save_market_scan(records: list[dict], candidates: list[dict]) -> None:
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "records": records,
+        "candidates": candidates,
+    }
+    MARKET_SCAN_PATH.write_text(
+        json.dumps(payload, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def load_market_scan() -> dict[str, Any]:
+    if not MARKET_SCAN_PATH.exists():
+        return {}
+    try:
+        return json.loads(MARKET_SCAN_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def save_results(records: list[dict]) -> None:
