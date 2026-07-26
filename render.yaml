@@ -1,0 +1,10 @@
+
+services:
+  - type: web
+    name: vektra-alpha-mobile
+    env: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: FINNHUB_API_KEY
+        sync: false
