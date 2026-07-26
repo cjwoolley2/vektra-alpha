@@ -414,3 +414,57 @@ def send_new_signal_alerts(records: list[dict], threshold: float, app_url: str =
 
     ALERT_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return sent
+
+
+def fetch_market_overview() -> list[dict[str, Any]]:
+    """Return a compact US market overview using liquid index proxies."""
+    instruments = [
+        ("S&P 500", "^GSPC"),
+        ("Nasdaq", "^IXIC"),
+        ("Dow", "^DJI"),
+        ("VIX", "^VIX"),
+    ]
+    rows: list[dict[str, Any]] = []
+    for name, ticker in instruments:
+        try:
+            data = yf.download(
+                ticker,
+                period="5d",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                threads=False,
+            )
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = [c[0] for c in data.columns]
+            close = data["Close"].dropna() if data is not None and not data.empty else pd.Series(dtype=float)
+            if len(close) < 2:
+                raise ValueError("Insufficient market data")
+            last = safe_float(close.iloc[-1])
+            change = safe_float(close.pct_change().iloc[-1])
+            rows.append({"name": name, "ticker": ticker, "last": last, "change": change, "available": True})
+        except Exception:
+            rows.append({"name": name, "ticker": ticker, "last": 0.0, "change": 0.0, "available": False})
+    return rows
+
+
+def fetch_price_history(ticker: str, period: str = "1mo", interval: str = "1d") -> pd.DataFrame:
+    """Return a simple chart-ready price history."""
+    try:
+        data = yf.download(
+            ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+        )
+        if data is None or data.empty:
+            return pd.DataFrame()
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = [c[0] for c in data.columns]
+        close = data[["Close"]].dropna().copy()
+        close.columns = [ticker]
+        return close
+    except Exception:
+        return pd.DataFrame()
