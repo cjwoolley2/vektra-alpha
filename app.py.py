@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import textwrap
 from datetime import datetime
 
 import pandas as pd
@@ -299,17 +300,18 @@ for rank, record in enumerate(briefing_records, start=1):
     risk_text = " · ".join(flags) if flags else "no major model flag"
 
     briefing_rows_html.append(
-        f"""
-        <div class="brief-row">
-            <div class="brief-rank">#{rank}</div>
-            <div class="brief-ticker">{ticker}</div>
-            <div class="brief-catalyst">
-                {catalyst}<br>
-                <span class="risk-flag">{risk_text}</span>
-            </div>
-            <div class="brief-score">{score:.0f}/100<br><span class="small">{probability:.0%}</span></div>
-        </div>
-        """
+        (
+            f'<div class="brief-row">'
+            f'<div class="brief-rank">#{rank}</div>'
+            f'<div class="brief-ticker">{ticker}</div>'
+            f'<div class="brief-catalyst">'
+            f'{catalyst}<br>'
+            f'<span class="risk-flag">{risk_text}</span>'
+            f'</div>'
+            f'<div class="brief-score">{score:.0f}/100<br>'
+            f'<span class="small">{probability:.0%}</span></div>'
+            f'</div>'
+        )
     )
     briefing_lines.append(
         f"{rank}. {ticker} — AI Score {score:.0f}/100; "
@@ -327,19 +329,18 @@ briefing_lines.extend(
 )
 briefing_text = "\n".join(briefing_lines)
 
-st.markdown(
-    f"""
-    <div class="briefing">
-        <div class="briefing-title">☀️ Daily AI Market Briefing</div>
-        <div class="briefing-sub">
-            Generated from the latest saved scan · {datetime.now().strftime("%d %b %Y, %H:%M")}
-        </div>
-        <p><b>{mood_icon} Market mood:</b> {mood_label} · {mood_confidence}% confidence</p>
-        {''.join(briefing_rows_html)}
-    </div>
-    """,
-    unsafe_allow_html=True,
+briefing_html = (
+    f'<div class="briefing">'
+    f'<div class="briefing-title">☀️ Daily AI Market Briefing</div>'
+    f'<div class="briefing-sub">'
+    f'Generated from the latest saved scan · {datetime.now().strftime("%d %b %Y, %H:%M")}'
+    f'</div>'
+    f'<p><b>{mood_icon} Market mood:</b> {mood_label} · {mood_confidence}% confidence</p>'
+    f'{"".join(briefing_rows_html)}'
+    f'</div>'
 )
+
+st.markdown(briefing_html, unsafe_allow_html=True)
 
 brief_a, brief_b = st.columns([1, 1])
 with brief_a:
