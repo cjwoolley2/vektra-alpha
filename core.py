@@ -53,6 +53,91 @@ BROAD_US_UNIVERSE = [
 ]
 
 
+
+# Broad, liquid UK universe using Yahoo Finance's London suffix (.L).
+# UK-listed share prices returned by Yahoo Finance are commonly quoted in GBp
+# (pence sterling), so the market metadata below identifies them accordingly.
+BROAD_UK_UNIVERSE = [
+    # Pharmaceuticals, healthcare and consumer staples
+    "AZN.L", "GSK.L", "HLN.L", "HIK.L", "SN.L", "ULVR.L", "DGE.L",
+    "BATS.L", "IMB.L", "ABF.L", "TSCO.L", "SBRY.L", "MKS.L", "NXT.L",
+
+    # Energy, utilities and natural resources
+    "SHEL.L", "BP.L", "RIO.L", "GLEN.L", "AAL.L", "ANTO.L", "FRES.L",
+    "HOC.L", "S32.L", "SSE.L", "NG.L", "CNA.L", "SVT.L", "UU.L", "PNN.L",
+
+    # Banks, insurance, asset management and financial services
+    "HSBA.L", "BARC.L", "LLOY.L", "NWG.L", "STAN.L", "PRU.L", "AV.L",
+    "LGEN.L", "MNG.L", "SDR.L", "III.L", "SMT.L", "LSEG.L",
+
+    # Aerospace, defence, automotive and industrial engineering
+    "RR.L", "BA.L", "QQ.L", "BAB.L", "MRO.L", "WEIR.L", "IMI.L",
+    "SPX.L", "HLMA.L", "ROL.L", "DPLM.L", "BNZL.L", "RS1.L", "SXS.L",
+    "VSVS.L", "GKN.L",
+
+    # Technology, software, telecoms and media
+    "SGE.L", "AUTO.L", "WPP.L", "ITV.L", "REL.L", "BT.A.L", "VOD.L",
+    "MONY.L", "TRST.L", "BYIT.L", "OXIG.L", "NCC.L",
+
+    # Travel, leisure, retail and services
+    "IAG.L", "EZJ.L", "WIZZ.L", "CCL.L", "TUI.L", "IHG.L", "WTB.L",
+    "CPG.L", "ENT.L", "FLTR.L", "JD.L", "FRAS.L", "BME.L", "KGF.L",
+
+    # Property, construction and infrastructure
+    "SGRO.L", "LAND.L", "BLND.L", "UTG.L", "BBOX.L", "PSN.L", "TW.L",
+    "BDEV.L", "VTY.L", "CRST.L", "MGNS.L", "KIE.L", "BREE.L",
+]
+
+GLOBAL_UNIVERSE = list(dict.fromkeys(BROAD_US_UNIVERSE + BROAD_UK_UNIVERSE))
+
+MARKET_UNIVERSES = {
+    "USA": BROAD_US_UNIVERSE,
+    "UK": BROAD_UK_UNIVERSE,
+    "USA + UK": GLOBAL_UNIVERSE,
+    "GLOBAL": GLOBAL_UNIVERSE,
+}
+
+
+def market_for_ticker(ticker: str) -> str:
+    return "UK" if str(ticker).upper().endswith(".L") else "USA"
+
+
+def currency_for_ticker(ticker: str) -> str:
+    # Yahoo Finance normally returns LSE share prices in pence sterling.
+    return "GBp" if market_for_ticker(ticker) == "UK" else "USD"
+
+
+def get_market_universe(market: str = "USA + UK") -> list[str]:
+    """Return a copy of the selected market universe."""
+    key = str(market or "USA + UK").strip().upper()
+    aliases = {
+        "US": "USA",
+        "UNITED STATES": "USA",
+        "UNITED KINGDOM": "UK",
+        "GB": "UK",
+        "BOTH": "USA + UK",
+        "USA+UK": "USA + UK",
+        "US + UK": "USA + UK",
+        "GLOBAL": "GLOBAL",
+    }
+    normalised = aliases.get(key, key)
+    return list(MARKET_UNIVERSES.get(normalised, GLOBAL_UNIVERSE))
+
+
+def finnhub_symbol_candidates(ticker: str) -> list[str]:
+    """Return sensible Finnhub symbol fallbacks for company-level data.
+
+    Some Finnhub plans accept the Yahoo-style .L symbol and others expose
+    company data under the unsuffixed underlying symbol. The original symbol
+    is always attempted first.
+    """
+    ticker = str(ticker).strip().upper()
+    candidates = [ticker]
+    if ticker.endswith(".L"):
+        candidates.append(ticker[:-2])
+    return list(dict.fromkeys(candidates))
+
+
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if hasattr(value, "iloc"):
@@ -65,16 +150,30 @@ def safe_float(value: Any, default: float = 0.0) -> float:
 def fetch_finnhub_news(ticker: str, api_key: str, lookback_days: int = 2) -> list[dict]:
     if not api_key:
         return []
+
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=lookback_days)
-    response = requests.get(
-        "https://finnhub.io/api/v1/company-news",
-        params={"symbol": ticker, "from": start.isoformat(), "to": end.isoformat(), "token": api_key},
-        timeout=20,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return payload[:30] if isinstance(payload, list) else []
+
+    for symbol in finnhub_symbol_candidates(ticker):
+        try:
+            response = requests.get(
+                "https://finnhub.io/api/v1/company-news",
+                params={
+                    "symbol": symbol,
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                    "token": api_key,
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list) and payload:
+                return payload[:30]
+        except Exception:
+            continue
+
+    return []
 
 
 
@@ -535,7 +634,7 @@ def prefilter_market_universe(
     candidate_count: int = 15,
 ) -> list[dict[str, Any]]:
     """Fast broad-market pre-screen using movement, volume and trend."""
-    tickers = list(dict.fromkeys(tickers or BROAD_US_UNIVERSE))
+    tickers = list(dict.fromkeys(tickers or GLOBAL_UNIVERSE))
     rows: list[dict[str, Any]] = []
 
     for start in range(0, len(tickers), 40):
@@ -592,6 +691,8 @@ def prefilter_market_universe(
 
                 rows.append({
                     "ticker": ticker,
+                    "market": market_for_ticker(ticker),
+                    "currency": currency_for_ticker(ticker),
                     "prefilter_score": round(prefilter_score, 1),
                     "last_price": round(last_price, 4),
                     "return_30m": round(return_30m, 6),
@@ -610,15 +711,20 @@ def run_broad_market_scan(
     finnhub_api_key: str,
     universe: list[str] | None = None,
     candidate_count: int = 15,
+    market: str = "USA + UK",
 ) -> tuple[list[dict], list[dict]]:
-    candidates = prefilter_market_universe(universe, candidate_count)
+    selected_universe = universe if universe is not None else get_market_universe(market)
+    candidates = prefilter_market_universe(selected_universe, candidate_count)
     candidate_tickers = [item["ticker"] for item in candidates]
     detailed = run_scan(candidate_tickers, finnhub_api_key) if candidate_tickers else []
 
     prefilter_lookup = {item["ticker"]: item for item in candidates}
     for record in detailed:
-        record["market_prefilter"] = prefilter_lookup.get(record.get("ticker"), {})
-        record["discovery_source"] = "Broad US market scanner"
+        ticker = str(record.get("ticker", ""))
+        record["market"] = market_for_ticker(ticker)
+        record["currency"] = currency_for_ticker(ticker)
+        record["market_prefilter"] = prefilter_lookup.get(ticker, {})
+        record["discovery_source"] = f'{record["market"]} broad market scanner' 
 
     detailed.sort(
         key=lambda item: (
@@ -634,6 +740,10 @@ def run_broad_market_scan(
 def save_market_scan(records: list[dict], candidates: list[dict]) -> None:
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "markets": sorted({
+            str(item.get("market", market_for_ticker(item.get("ticker", ""))))
+            for item in candidates
+        }),
         "records": records,
         "candidates": candidates,
     }
