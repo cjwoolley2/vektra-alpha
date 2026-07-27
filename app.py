@@ -8,17 +8,23 @@ import pandas as pd
 import streamlit as st
 
 from core import (
+    BROAD_UK_UNIVERSE,
     BROAD_US_UNIVERSE,
+    GLOBAL_UNIVERSE,
     DEFAULT_TICKERS,
     HISTORY_PATH,
+    evaluate_buy_today,
     fetch_market_overview,
+    get_market_universe,
     fetch_price_history,
     load_market_scan,
     load_results,
+    rank_buy_today_candidates,
     run_broad_market_scan,
     run_scan,
     save_market_scan,
     save_results,
+    select_buy_today,
 )
 
 st.set_page_config(
@@ -216,10 +222,13 @@ with note_col:
     st.caption("The dashboard uses the latest saved scan. Background scans can continue through GitHub Actions.")
 
 
-st.markdown('<div class="section-title">🌐 Broad US Market Scanner</div>', unsafe_allow_html=True)
-market_scan_a, market_scan_b, market_scan_c = st.columns([1.2, 1, 2])
+st.markdown('<div class="section-title">🌍 USA + UK Market Scanner</div>', unsafe_allow_html=True)
+market_scan_a, market_scan_b, market_scan_c, market_scan_d = st.columns([1.1, 1.1, 1, 1.8])
 
 with market_scan_a:
+    selected_market = st.selectbox("Market", ["USA + UK", "USA", "UK"], index=0)
+
+with market_scan_b:
     candidate_count = st.selectbox(
         "Deep-analysis candidates",
         [10, 15, 20],
@@ -227,23 +236,25 @@ with market_scan_a:
         help="Only the strongest pre-screened candidates receive the full news and AI analysis.",
     )
 
-with market_scan_b:
+with market_scan_c:
     run_market_scan = st.button(
         "Scan broad market",
         type="secondary",
         use_container_width=True,
     )
 
-with market_scan_c:
+with market_scan_d:
+    selected_universe = get_market_universe(selected_market)
     st.caption(
-        f"Pre-screens {len(BROAD_US_UNIVERSE)} liquid US stocks, then deeply analyses the strongest candidates."
+        f"Pre-screens {len(selected_universe)} liquid {selected_market} stocks, then deeply analyses the strongest candidates."
     )
 
 if run_market_scan:
-    with st.spinner("Pre-screening the broad market, then running deep AI analysis..."):
+    with st.spinner(f"Pre-screening {selected_market}, then running deep AI analysis..."):
         market_records, market_candidates = run_broad_market_scan(
             secret("FINNHUB_API_KEY"),
             candidate_count=int(candidate_count),
+            market=selected_market,
         )
         save_market_scan(market_records, market_candidates)
     st.success(
@@ -292,6 +303,93 @@ if saved_market_scan:
                 },
             )
         st.caption(f"Last broad scan: {generated_at or 'unknown'}")
+
+
+# ---------------------------------------------------------------------------
+# AI BUY TODAY DECISION GATE
+# ---------------------------------------------------------------------------
+if saved_market_scan and saved_market_scan.get("records"):
+    decision_records = saved_market_scan.get("records", [])
+    buy_today = select_buy_today(decision_records)
+    ranked_buy_decisions = rank_buy_today_candidates(decision_records, limit=5)
+
+    st.markdown('<div class="section-title">🎯 AI Buy Today Decision</div>', unsafe_allow_html=True)
+
+    decision_code = buy_today.get("decision_code", "NO_TRADE")
+    if decision_code == "BUY_CANDIDATE":
+        st.success(
+            f'BUY CANDIDATE TODAY: {buy_today.get("ticker")} — '
+            f'{float(buy_today.get("gate_score", 0)):.0f}% of decision conditions passed.'
+        )
+    elif buy_today.get("decision") == "NO QUALIFYING BUY TODAY":
+        st.warning(
+            f'NO QUALIFYING BUY TODAY. Closest candidate: {buy_today.get("ticker")} — '
+            f'{float(buy_today.get("gate_score", 0)):.0f}% of conditions passed.'
+        )
+    else:
+        st.info(str(buy_today.get("decision", "NO TRADE")))
+
+    buy_a, buy_b, buy_c, buy_d = st.columns(4)
+    buy_a.metric("Stock", buy_today.get("ticker", "—"))
+    buy_b.metric("AI Score", f'{float(buy_today.get("ai_score", 0)):.0f}/100')
+    buy_c.metric("Probability up", f'{float(buy_today.get("probability_up", 0)):.0%}')
+    buy_d.metric("Decision gate", f'{float(buy_today.get("gate_score", 0)):.0f}%')
+
+    st.markdown(f'**Catalyst:** {buy_today.get("catalyst", "No qualifying catalyst")}.')
+    st.caption(
+        f'Market: {buy_today.get("market", "—")} · '
+        f'30m: {float(buy_today.get("return_30m", 0)):+.2%} · '
+        f'1 day: {float(buy_today.get("return_1d", 0)):+.2%} · '
+        f'Relative volume: {float(buy_today.get("relative_volume", 0)):.2f}× · '
+        f'Evidence: {float(buy_today.get("evidence_coverage", 0)):.0f}%'
+    )
+
+    explain_left, explain_right = st.columns(2)
+    with explain_left:
+        st.markdown("**Conditions passed**")
+        strengths = buy_today.get("strengths", [])
+        if strengths:
+            for item in strengths:
+                st.write(f"✅ {item}")
+        else:
+            st.write("No qualifying strengths recorded.")
+
+    with explain_right:
+        st.markdown("**Conditions not met / risk flags**")
+        failures = list(buy_today.get("failed_checks", []))
+        failures.extend(
+            item for item in buy_today.get("hard_failures", []) if item not in failures
+        )
+        if failures:
+            for item in failures:
+                st.write(f"⚠️ {item}")
+        else:
+            st.write("No model risk flag triggered.")
+
+    with st.expander("Compare the top five decision results"):
+        decision_df = pd.DataFrame(ranked_buy_decisions)
+        display_columns = [
+            "ticker", "market", "decision", "gate_score", "ai_score",
+            "probability_up", "evidence_coverage", "return_30m",
+            "relative_volume", "catalyst_impact",
+        ]
+        display_columns = [c for c in display_columns if c in decision_df.columns]
+        st.dataframe(
+            decision_df[display_columns],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "gate_score": st.column_config.ProgressColumn("Decision gate", min_value=0, max_value=100, format="%.0f"),
+                "ai_score": st.column_config.ProgressColumn("AI Score", min_value=0, max_value=100, format="%.0f"),
+                "probability_up": st.column_config.ProgressColumn("Probability", min_value=0, max_value=1, format="%.0f%%"),
+                "return_30m": st.column_config.NumberColumn("30m move", format="%+.2f%%"),
+                "relative_volume": st.column_config.NumberColumn("Relative volume", format="%.2fx"),
+            },
+        )
+
+    st.caption(
+        "Research decision support only. BUY CANDIDATE does not mean guaranteed profit and is not personalised financial advice or an instruction to trade."
+    )
 
 records = load_results()
 if not records:
