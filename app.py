@@ -8,6 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from core import (
+    run_ai_news_radar,
+    load_ai_news_radar,
+    AI_GLOBAL_UNIVERSE,
     BROAD_UK_UNIVERSE,
     BROAD_US_UNIVERSE,
     GLOBAL_UNIVERSE,
@@ -139,6 +142,34 @@ html, body, [data-testid="stAppViewContainer"] {background:#07101e; color:var(--
  .brief-score{font-size:.82rem}
 }
 
+
+.radar-card {
+    border:1px solid rgba(255,255,255,.10);
+    background:linear-gradient(145deg,rgba(10,20,38,.98),rgba(15,30,55,.95));
+    border-radius:18px;
+    padding:14px 16px;
+    margin:.65rem 0;
+}
+.radar-critical {border-left:5px solid #ff4d5f;}
+.radar-high {border-left:5px solid #ff7b54;}
+.radar-important {border-left:5px solid #facc15;}
+.radar-watch {border-left:5px solid #60a5fa;}
+.radar-headline {font-weight:850;font-size:1.02rem;line-height:1.3;}
+.radar-meta {font-size:.78rem;color:#9badca;margin-top:4px;}
+.radar-impact {font-weight:900;}
+.radar-chip {
+    display:inline-block;padding:3px 8px;margin:3px 3px 0 0;border-radius:999px;
+    background:rgba(96,165,250,.12);border:1px solid rgba(96,165,250,.20);
+    font-size:.72rem;
+}
+.emerging-card {
+    border:1px solid rgba(168,85,247,.32);
+    background:rgba(88,28,135,.16);
+    border-radius:16px;
+    padding:12px 14px;
+    margin:.5rem 0;
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -222,43 +253,173 @@ with note_col:
     st.caption("The dashboard uses the latest saved scan. Background scans can continue through GitHub Actions.")
 
 
-st.markdown('<div class="section-title">🌍 USA + UK Market Scanner</div>', unsafe_allow_html=True)
-market_scan_a, market_scan_b, market_scan_c, market_scan_d = st.columns([1.1, 1.1, 1, 1.8])
+
+st.markdown('<div class="section-title">🚨 AI News & Geopolitical Radar</div>', unsafe_allow_html=True)
+radar_a, radar_b, radar_c = st.columns([1, 1, 2])
+
+with radar_a:
+    refresh_radar = st.button(
+        "Refresh AI News Radar",
+        type="primary",
+        use_container_width=True,
+    )
+
+with radar_b:
+    radar_threshold = st.selectbox(
+        "Display threshold",
+        ["All", "Watch 50+", "Important 65+", "High 80+", "Critical 90+"],
+        index=2,
+    )
+
+with radar_c:
+    st.caption(
+        "Combines current general-market news with global AI/geopolitical coverage, "
+        "then scores materiality, surprise, source credibility, freshness and AI relevance."
+    )
+
+if refresh_radar:
+    with st.spinner("Scanning global AI and geopolitical news..."):
+        radar_payload = run_ai_news_radar(secret("FINNHUB_API_KEY"))
+    st.success(
+        f'Radar updated: {radar_payload.get("event_count", 0)} relevant events · '
+        f'{radar_payload.get("emerging_signal_count", 0)} emerging signals.'
+    )
+
+radar_payload = load_ai_news_radar()
+
+if radar_payload:
+    generated = radar_payload.get("generated_at", "")
+    radar_metrics = st.columns(4)
+    radar_metrics[0].metric("Relevant events", radar_payload.get("event_count", 0))
+    radar_metrics[1].metric("Critical", radar_payload.get("critical_count", 0))
+    radar_metrics[2].metric("High impact", radar_payload.get("high_impact_count", 0))
+    radar_metrics[3].metric("Emerging signals", radar_payload.get("emerging_signal_count", 0))
+
+    emerging_signals = radar_payload.get("emerging_signals", [])
+    if emerging_signals:
+        st.markdown("#### ⚡ Emerging AI Signals")
+        for signal in emerging_signals[:5]:
+            headlines = " · ".join(signal.get("latest_headlines", [])[:2])
+            emerging_html = (
+                '<div class="emerging-card">'
+                f'<b>⚡ {signal.get("topic", "Emerging signal")}</b> '
+                f'<span class="score-pill">{float(signal.get("signal_score", 0)):.0f}/100</span>'
+                f'<div class="small">{signal.get("independent_sources", 0)} independent sources · '
+                f'{signal.get("article_count", 0)} recent reports</div>'
+                f'<div class="small" style="margin-top:5px">{headlines}</div>'
+                '<div class="small"><b>Evidence:</b> Multi-source inference — not yet a confirmed trade signal.</div>'
+                '</div>'
+            )
+            st.markdown(emerging_html, unsafe_allow_html=True)
+
+    threshold_map = {
+        "All": 0,
+        "Watch 50+": 50,
+        "Important 65+": 65,
+        "High 80+": 80,
+        "Critical 90+": 90,
+    }
+    minimum_score = threshold_map[radar_threshold]
+
+    st.markdown("#### Latest AI Market Impact Events")
+    shown_events = 0
+
+    for event in radar_payload.get("events", []):
+        score = float(event.get("impact_score", 0))
+        if score < minimum_score:
+            continue
+        if shown_events >= 20:
+            break
+
+        label = event.get("impact_label", "WATCH")
+        css_class = (
+            "radar-critical" if score >= 90 else
+            "radar-high" if score >= 80 else
+            "radar-important" if score >= 65 else
+            "radar-watch"
+        )
+
+        headline = event.get("headline", "Untitled")
+        url = event.get("url", "")
+        headline_html = (
+            f'<a href="{url}" target="_blank">{headline}</a>'
+            if url else headline
+        )
+
+        topics = list(event.get("ai_topics", [])) + list(event.get("geopolitical_topics", []))
+        chips = "".join(
+            f'<span class="radar-chip">{topic}</span>'
+            for topic in topics[:6]
+        )
+
+        positive = ", ".join(event.get("positive_tickers", [])[:8]) or "—"
+        negative = ", ".join(event.get("negative_tickers", [])[:8]) or "—"
+        direct = ", ".join(event.get("direct_ticker_mentions", [])[:8]) or "—"
+
+        event_html = (
+            f'<div class="radar-card {css_class}">'
+            f'<div class="radar-impact">{event.get("impact_icon", "🟡")} {label} · {score:.0f}/100</div>'
+            f'<div class="radar-headline">{headline_html}</div>'
+            f'<div class="radar-meta">{event.get("source", "Unknown")} · {event.get("age", "—")} ago · '
+            f'source credibility {float(event.get("source_credibility", 0)):.0f}/100 · '
+            f'corroboration {int(event.get("corroboration_count", 1))}</div>'
+            f'<div>{chips}</div>'
+            f'<div class="small" style="margin-top:8px"><b>Direct AI names:</b> {direct}<br>'
+            f'<b>Potential positive exposure:</b> {positive}<br>'
+            f'<b>Potential negative exposure:</b> {negative}</div>'
+            f'<div class="small" style="margin-top:5px"><b>Evidence type:</b> '
+            f'{event.get("evidence_type", "Reported event")}. '
+            'Directional exposure is an analytical hypothesis, not a prediction.</div>'
+            '</div>'
+        )
+        st.markdown(event_html, unsafe_allow_html=True)
+        shown_events += 1
+
+    st.caption(f"Last radar update: {generated or 'unknown'}")
+else:
+    st.info("No AI News Radar scan is saved yet. Press **Refresh AI News Radar**.")
+
+
+st.markdown('<div class="section-title">🧠 AI Ecosystem Scanner</div>', unsafe_allow_html=True)
+st.caption(
+    f"Focused on {len(AI_GLOBAL_UNIVERSE)} AI and AI-related stocks across compute, "
+    "semiconductors, memory, networking, photonics, data centres, power, cloud, "
+    "software, cybersecurity and robotics."
+)
+
+market_scan_a, market_scan_b, market_scan_c = st.columns([1.2, 1, 2])
 
 with market_scan_a:
-    selected_market = st.selectbox("Market", ["USA + UK", "USA", "UK"], index=0)
-
-with market_scan_b:
     candidate_count = st.selectbox(
         "Deep-analysis candidates",
         [10, 15, 20],
         index=1,
-        help="Only the strongest pre-screened candidates receive the full news and AI analysis.",
+        help="Only the strongest AI pre-screen candidates receive the full news and AI analysis.",
     )
 
-with market_scan_c:
+with market_scan_b:
     run_market_scan = st.button(
-        "Scan broad market",
+        "Scan AI ecosystem",
         type="secondary",
         use_container_width=True,
     )
 
-with market_scan_d:
-    selected_universe = get_market_universe(selected_market)
+with market_scan_c:
     st.caption(
-        f"Pre-screens {len(selected_universe)} liquid {selected_market} stocks, then deeply analyses the strongest candidates."
+        "The fast scanner looks for unusual movement, volume and trend across the AI universe, "
+        "then runs the full Vektra Alpha engine on the strongest candidates."
     )
 
 if run_market_scan:
-    with st.spinner(f"Pre-screening {selected_market}, then running deep AI analysis..."):
+    with st.spinner("Scanning the AI ecosystem, then running deep AI analysis..."):
         market_records, market_candidates = run_broad_market_scan(
             secret("FINNHUB_API_KEY"),
             candidate_count=int(candidate_count),
-            market=selected_market,
+            market="AI",
         )
         save_market_scan(market_records, market_candidates)
     st.success(
-        f"Broad scan complete: {len(market_candidates)} candidates pre-screened and "
+        f"AI ecosystem scan complete: {len(market_candidates)} candidates pre-screened and "
         f"{len(market_records)} deeply ranked."
     )
 
@@ -266,9 +427,67 @@ saved_market_scan = load_market_scan()
 if saved_market_scan:
     market_records = saved_market_scan.get("records", [])
     market_candidates = saved_market_scan.get("candidates", [])
+    theme_rotation = saved_market_scan.get("theme_rotation", [])
     generated_at = saved_market_scan.get("generated_at", "")
 
-    st.markdown("#### Emerging opportunities")
+    if theme_rotation:
+        st.markdown("#### 🔥 Hottest AI Themes")
+        top_themes = theme_rotation[:5]
+        theme_cols = st.columns(len(top_themes))
+
+        for col, theme in zip(theme_cols, top_themes):
+            with col:
+                st.metric(
+                    theme.get("theme", "AI Theme"),
+                    f'{float(theme.get("rotation_score", 0)):.0f}/100',
+                    f'{float(theme.get("average_30m_return", 0)):+.2%} 30m',
+                )
+                st.caption(
+                    f'AI {float(theme.get("average_ai_score", 0)):.0f} · '
+                    f'Prob {float(theme.get("average_probability", 0)):.0%} · '
+                    f'Vol {float(theme.get("average_relative_volume", 0)):.2f}×'
+                )
+
+        with st.expander("View AI theme rotation"):
+            theme_df = pd.DataFrame(theme_rotation)
+            if not theme_df.empty:
+                display_cols = [
+                    column for column in [
+                        "theme",
+                        "rotation_score",
+                        "average_ai_score",
+                        "average_probability",
+                        "average_30m_return",
+                        "average_relative_volume",
+                        "stock_count",
+                        "stocks",
+                    ]
+                    if column in theme_df.columns
+                ]
+                st.dataframe(
+                    theme_df[display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "rotation_score": st.column_config.ProgressColumn(
+                            "Rotation Score", min_value=0, max_value=100, format="%.0f"
+                        ),
+                        "average_ai_score": st.column_config.ProgressColumn(
+                            "Average AI", min_value=0, max_value=100, format="%.0f"
+                        ),
+                        "average_probability": st.column_config.ProgressColumn(
+                            "Avg Probability", min_value=0, max_value=1, format="%.1f%%"
+                        ),
+                        "average_30m_return": st.column_config.NumberColumn(
+                            "Avg 30m", format="%+.2f%%"
+                        ),
+                        "average_relative_volume": st.column_config.NumberColumn(
+                            "Relative volume", format="%.2fx"
+                        ),
+                    },
+                )
+
+    st.markdown("#### 🚀 Top AI Opportunities")
     if market_records:
         emerging_cols = st.columns(min(5, len(market_records[:5])))
         for col, item in zip(emerging_cols, market_records[:5]):
@@ -280,17 +499,32 @@ if saved_market_scan:
                     f'{float(item.get("return_30m", 0)):+.2%} in 30m',
                 )
                 st.caption(
-                    f'Probability {float(item.get("probability_up", 0)):.0%} · '
-                    f'Volume {float(pre.get("relative_volume", 0)):.2f}×'
+                    f'{item.get("ai_theme", "AI Ecosystem")} · '
+                    f'Prob {float(item.get("probability_up", 0)):.0%} · '
+                    f'Vol {float(pre.get("relative_volume", 0)):.2f}×'
                 )
     else:
-        st.caption("No deeply scored market candidates are saved yet.")
+        st.caption("No deeply scored AI candidates are saved yet.")
 
-    with st.expander("View fast pre-screen results"):
+    with st.expander("View AI pre-screen results"):
         if market_candidates:
             market_candidate_df = pd.DataFrame(market_candidates)
+            display_cols = [
+                column for column in [
+                    "ticker",
+                    "market",
+                    "ai_theme",
+                    "prefilter_score",
+                    "last_price",
+                    "return_30m",
+                    "return_1d",
+                    "relative_volume",
+                    "trend",
+                ]
+                if column in market_candidate_df.columns
+            ]
             st.dataframe(
-                market_candidate_df,
+                market_candidate_df[display_cols],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -302,7 +536,7 @@ if saved_market_scan:
                     "relative_volume": st.column_config.NumberColumn("Relative volume", format="%.2fx"),
                 },
             )
-        st.caption(f"Last broad scan: {generated_at or 'unknown'}")
+        st.caption(f"Last AI ecosystem scan: {generated_at or 'unknown'}")
 
 
 # ---------------------------------------------------------------------------
