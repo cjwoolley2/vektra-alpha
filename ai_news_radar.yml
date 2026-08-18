@@ -1,0 +1,44 @@
+name: Vektra AI News Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  ai-news-radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run AI News Radar
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          APP_URL: ${{ vars.APP_URL }}
+          RADAR_ALERT_THRESHOLD: ${{ vars.RADAR_ALERT_THRESHOLD }}
+          ENABLE_RADAR_ALERTS: "true"
+        run: python news_radar.py
+
+      - name: Save radar state
+        run: |
+          git config user.name "Vektra Alpha Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/ai_news_radar.json data/ai_news_radar_state.json || true
+          git diff --cached --quiet || git commit -m "Update AI news radar"
+          git push
