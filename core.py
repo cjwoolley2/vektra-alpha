@@ -1514,6 +1514,146 @@ def load_market_scan() -> dict[str, Any]:
         return {}
 
 
+def evaluate_buy_today(record: dict) -> dict[str, Any]:
+    """Evaluate whether one stock qualifies as a same-day BUY CANDIDATE.
+
+    This is a transparent research gate, not a personalised recommendation or
+    execution instruction. A high AI Score alone cannot create a BUY result.
+    """
+    ticker = str(record.get("ticker", ""))
+    ai_score = safe_float(record.get("ai_score"), 0.0)
+    probability = safe_float(record.get("probability_up"), 0.0)
+    evidence = safe_float(record.get("evidence_coverage"), 0.0)
+    move_30m = safe_float(record.get("return_30m"), 0.0)
+    move_1d = safe_float(record.get("return_1d"), 0.0)
+    volume = safe_float(record.get("volume_ratio_30m"), 0.0)
+    net_return = safe_float(record.get("net_expected_return"), 0.0)
+    liquidity = safe_float(record.get("market_prefilter", {}).get("relative_volume"), volume)
+
+    articles = sorted(
+        record.get("news", []),
+        key=lambda item: safe_float(item.get("impact_score"), 0.0),
+        reverse=True,
+    )
+    best_article = articles[0] if articles else {}
+    catalyst_direction = str(best_article.get("sentiment_label", "Neutral"))
+    catalyst_impact = safe_float(best_article.get("impact_score"), 0.0)
+    catalyst = (
+        best_article.get("headline")
+        or best_article.get("reason")
+        or "No qualifying live catalyst"
+    )
+
+    checks = {
+        "AI score at least 78": ai_score >= 78,
+        "Probability at least 60%": probability >= 0.60,
+        "Evidence coverage at least 60%": evidence >= 60,
+        "Positive 30-minute momentum": move_30m > 0,
+        "Move is not already exhausted": move_30m <= 0.045,
+        "Positive or stable daily trend": move_1d >= -0.005,
+        "Relative volume at least 1.5x": max(volume, liquidity) >= 1.5,
+        "Relative volume below extreme level": max(volume, liquidity) <= 10.0,
+        "Positive expected return after costs": net_return > 0,
+        "Bullish material catalyst": catalyst_direction == "Bullish" and catalyst_impact >= 55,
+    }
+
+    passed = sum(checks.values())
+    total = len(checks)
+    gate_score = 100.0 * passed / total
+
+    hard_failures = []
+    if probability < 0.55:
+        hard_failures.append("model probability below 55%")
+    if evidence < 45:
+        hard_failures.append("insufficient evidence coverage")
+    if move_30m <= 0:
+        hard_failures.append("no positive intraday confirmation")
+    if move_30m > 0.06:
+        hard_failures.append("price may already be overextended")
+    if max(volume, liquidity) > 12:
+        hard_failures.append("extreme volume may indicate unstable trading")
+    if net_return <= 0:
+        hard_failures.append("expected edge does not exceed estimated costs")
+
+    if not hard_failures and passed >= 9 and probability >= 0.64 and ai_score >= 82:
+        decision = "BUY CANDIDATE TODAY"
+        decision_code = "BUY_CANDIDATE"
+    elif not hard_failures and passed >= 7 and ai_score >= 70:
+        decision = "WATCH — CONFIRMATION NEEDED"
+        decision_code = "WATCH"
+    else:
+        decision = "NO TRADE"
+        decision_code = "NO_TRADE"
+
+    strengths = [name for name, ok in checks.items() if ok]
+    failed_checks = [name for name, ok in checks.items() if not ok]
+
+    return {
+        "ticker": ticker,
+        "market": record.get("market", market_for_ticker(ticker)),
+        "currency": record.get("currency", currency_for_ticker(ticker)),
+        "decision": decision,
+        "decision_code": decision_code,
+        "gate_score": round(gate_score, 1),
+        "checks_passed": passed,
+        "checks_total": total,
+        "ai_score": round(ai_score, 1),
+        "probability_up": round(probability, 4),
+        "evidence_coverage": round(evidence, 1),
+        "return_30m": round(move_30m, 6),
+        "return_1d": round(move_1d, 6),
+        "relative_volume": round(max(volume, liquidity), 2),
+        "net_expected_return": round(net_return, 6),
+        "catalyst": str(catalyst)[:220],
+        "catalyst_direction": catalyst_direction,
+        "catalyst_impact": round(catalyst_impact, 1),
+        "strengths": strengths,
+        "failed_checks": failed_checks,
+        "hard_failures": hard_failures,
+        "checks": checks,
+        "disclaimer": "Research decision support only; not personalised financial advice or an instruction to trade.",
+    }
+
+
+def rank_buy_today_candidates(records: list[dict], limit: int = 5) -> list[dict[str, Any]]:
+    """Evaluate and rank available stocks by decision quality."""
+    evaluations = [evaluate_buy_today(record) for record in records]
+    priority = {"BUY_CANDIDATE": 2, "WATCH": 1, "NO_TRADE": 0}
+    evaluations.sort(
+        key=lambda item: (
+            priority.get(str(item.get("decision_code")), 0),
+            safe_float(item.get("gate_score")),
+            safe_float(item.get("probability_up")),
+            safe_float(item.get("ai_score")),
+        ),
+        reverse=True,
+    )
+    return evaluations[:max(1, int(limit))]
+
+
+def select_buy_today(records: list[dict]) -> dict[str, Any]:
+    """Return the strongest qualifying candidate, or a transparent no-trade result."""
+    ranked = rank_buy_today_candidates(records, limit=max(1, len(records)))
+    qualifying = [item for item in ranked if item.get("decision_code") == "BUY_CANDIDATE"]
+    if qualifying:
+        return qualifying[0]
+    if ranked:
+        best = dict(ranked[0])
+        best["decision"] = "NO QUALIFYING BUY TODAY"
+        best["decision_code"] = "NO_TRADE"
+        return best
+    return {
+        "ticker": "—",
+        "decision": "NO DATA",
+        "decision_code": "NO_TRADE",
+        "gate_score": 0.0,
+        "strengths": [],
+        "failed_checks": ["Run a market scan first"],
+        "hard_failures": ["No current scan data"],
+        "disclaimer": "Research decision support only; not personalised financial advice or an instruction to trade.",
+    }
+
+
 def save_results(records: list[dict]) -> None:
     SIGNALS_PATH.write_text(json.dumps(records, indent=2, default=str), encoding="utf-8")
     if records:
