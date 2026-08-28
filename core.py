@@ -600,6 +600,7 @@ def classify_ai_market_news(item: dict) -> dict | None:
 
 
 def _deduplicate_radar_events(events: list[dict]) -> list[dict]:
+    import re
     groups = []
     for event in events:
         headline_tokens = set(re.findall(r"[a-z0-9]+", str(event.get("headline", "")).lower()))
